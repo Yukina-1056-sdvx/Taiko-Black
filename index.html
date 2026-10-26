@@ -1,0 +1,315 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TJA音符倍率変換ツール</title>
+<style>
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 24px 16px;
+  background: #11131a;
+  color: #f1f3f9;
+  font-family: system-ui, sans-serif;
+}
+
+main { max-width: 760px; margin: auto; }
+h1 { font-size: 1.5rem; }
+
+.panel {
+  padding: 18px;
+  margin: 16px 0;
+  background: #1c202b;
+  border: 1px solid #343b4d;
+  border-radius: 14px;
+}
+
+input, button, textarea { font: inherit; }
+
+input[type="file"],
+input[type="number"] {
+  width: 100%;
+  margin: 8px 0;
+  padding: 12px;
+  color: white;
+  background: #10131b;
+  border: 1px solid #41485b;
+  border-radius: 8px;
+}
+
+button {
+  width: 100%;
+  margin-top: 10px;
+  padding: 13px;
+  color: white;
+  background: #e94b57;
+  border: 0;
+  border-radius: 9px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+textarea {
+  width: 100%;
+  min-height: 220px;
+  padding: 12px;
+  color: #dce5f5;
+  background: #10131b;
+  border: 1px solid #41485b;
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.muted {
+  color: #aab2c5;
+  font-size: .9rem;
+}
+
+#status {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+code {
+  color: #ffb6bd;
+  overflow-wrap: anywhere;
+}
+</style>
+</head>
+
+<body>
+<main>
+  <h1>🥁 TJA音符倍率変換ツール</h1>
+
+  <p class="muted">
+    TJAファイルの譜面を1〜100倍に細分化します。
+    処理はブラウザ内で完結します。
+  </p>
+
+  <section class="panel">
+    <h2>1. TJAファイル</h2>
+    <input id="file" type="file" accept=".tja">
+    <p id="filename" class="muted">ファイル未選択</p>
+
+    <h2>2. 倍率</h2>
+    <label for="multiplier">何倍にする？（1〜100）</label>
+    <input
+      id="multiplier"
+      type="number"
+      min="1"
+      max="100"
+      step="1"
+      value="2"
+    >
+
+    <button id="convert" disabled>
+      倍率変換する
+    </button>
+
+    <button id="download" disabled>
+      変換済みTJAをダウンロード
+    </button>
+  </section>
+
+  <section class="panel">
+    <h2>変換結果</h2>
+    <p id="status">TJAファイルを選択してください。</p>
+    <textarea
+      id="preview"
+      readonly
+      placeholder="変換後の譜面がここに表示されます"
+    ></textarea>
+  </section>
+
+  <section class="panel">
+    <h2>変換ルール：10倍の例</h2>
+    <p>通常音符・休符</p>
+    <code>1 → 1111111111</code><br>
+    <code>2 → 2222222222</code><br>
+    <code>3 → 3333333333</code><br>
+    <code>4 → 4444444444</code><br>
+    <code>0 → 0000000000</code>
+
+    <p>特殊音符</p>
+    <code>5 → 5000000000</code><br>
+    <code>6 → 6000000000</code><br>
+    <code>7 → 7000000000</code><br>
+    <code>8 → 8000000000</code><br>
+    <code>9 → 9000000000</code>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const $ = id => document.getElementById(id);
+
+let sourceText = null;
+let resultText = null;
+let sourceName = "chart";
+
+$("file").addEventListener("change", async event => {
+  const file = event.target.files[0];
+
+  sourceText = null;
+  resultText = null;
+  $("convert").disabled = true;
+  $("download").disabled = true;
+  $("preview").value = "";
+
+  if (!file) {
+    $("filename").textContent = "ファイル未選択";
+    $("status").textContent = "TJAファイルを選択してください。";
+    return;
+  }
+
+  $("filename").textContent = file.name;
+
+  try {
+    sourceText = await file.text();
+    sourceName = file.name.replace(/\.(tja)$/i, "");
+
+    $("status").textContent =
+      "読み込み完了。倍率を指定して変換してください。";
+
+    $("convert").disabled = false;
+  } catch (error) {
+    $("status").textContent =
+      "読み込み失敗: " + error.message;
+  }
+});
+
+function convertTJA(text, multiplier) {
+  const lines = text.split(/\r\n|\n|\r/);
+
+  let inChart = false;
+  let convertedDigits = 0;
+  let convertedLines = 0;
+
+  const output = lines.map(line => {
+    const trimmed = line.trim();
+
+    // 譜面開始
+    if (/^#START(?:\s|$)/i.test(trimmed)) {
+      inChart = true;
+      return line;
+    }
+
+    // 譜面終了
+    if (/^#END\b/i.test(trimmed)) {
+      inChart = false;
+      return line;
+    }
+
+    // 譜面外の命令や空行は変更しない
+    if (
+      !inChart ||
+      trimmed === "" ||
+      trimmed.startsWith("#")
+    ) {
+      return line;
+    }
+
+    let lineDigits = 0;
+
+    const converted = line.replace(/[0-9]/g, digit => {
+      lineDigits++;
+
+      // 0〜4：同じ数字を倍率分繰り返す
+      if (/[0-4]/.test(digit)) {
+        return digit.repeat(multiplier);
+      }
+
+      // 5〜9：先頭の数字を残して0で埋める
+      return digit + "0".repeat(multiplier - 1);
+    });
+
+    if (lineDigits > 0) {
+      convertedLines++;
+      convertedDigits += lineDigits;
+    }
+
+    return converted;
+  });
+
+  return {
+    text: output.join("\n"),
+    convertedLines,
+    convertedDigits
+  };
+}
+
+$("convert").addEventListener("click", () => {
+  if (sourceText === null) return;
+
+  const multiplier = Number($("multiplier").value);
+
+  if (
+    !Number.isInteger(multiplier) ||
+    multiplier < 1 ||
+    multiplier > 100
+  ) {
+    $("status").textContent =
+      "倍率は1〜100の自然数で指定してください。";
+    return;
+  }
+
+  try {
+    const result = convertTJA(sourceText, multiplier);
+
+    resultText = result.text;
+    $("preview").value = resultText;
+    $("download").disabled = false;
+
+    $("status").textContent =
+      "変換完了！\n" +
+      "倍率: " + multiplier + "倍\n" +
+      "処理した譜面データ行: " +
+      result.convertedLines + "\n" +
+      "処理した数字の個数: " +
+      result.convertedDigits + "\n" +
+      "変換後のTJAをダウンロードできます。";
+
+  } catch (error) {
+    resultText = null;
+    $("download").disabled = true;
+
+    $("status").textContent =
+      "変換エラー: " + error.message;
+  }
+});
+
+$("download").addEventListener("click", () => {
+  if (resultText === null) return;
+
+  const multiplier = Number($("multiplier").value);
+
+  const blob = new Blob(
+    [resultText],
+    { type: "text/plain;charset=utf-8" }
+  );
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download =
+    sourceName + "_" + multiplier + "x.tja";
+
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+</script>
+</body>
+</html>
